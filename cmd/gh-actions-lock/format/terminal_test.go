@@ -402,10 +402,21 @@ func TestPresentResults_ExcludeKeepsOtherFindings(t *testing.T) {
 					},
 				},
 			},
+			{
+				Path: ".github/workflows/release.yml",
+				Findings: []checks.Finding{{
+					WorkflowPath: ".github/workflows/release.yml",
+					Category:     checks.NotPinned,
+					Severity:     checks.SeverityError,
+					Confidence:   checks.ConfidenceHigh,
+					ActionRef:    &parserlock.ActionRef{Owner: "actions", Repo: "checkout", Ref: "v4"},
+					Dependency:   &dep.Dependency{NWO: "actions/checkout", Ref: "v4"},
+				}},
+			},
 		},
 	}
 
-	PresentResults(u, report, false, false, checks.UnreachablePin)
+	PresentResults(u, report, false, false, checks.UnreachablePin, checks.NotPinned)
 	got := buf.String()
 
 	if strings.Contains(got, "UNREACHABLE-PIN") {
@@ -413,6 +424,83 @@ func TestPresentResults_ExcludeKeepsOtherFindings(t *testing.T) {
 	}
 	if !strings.Contains(got, "LOCAL-ACTION") {
 		t.Errorf("non-excluded local-action should still appear:\n%s", got)
+	}
+	if !strings.Contains(got, "1 of 2 workflows failed: 1 local-action") {
+		t.Errorf("excluded findings should not count as failed:\n%s", got)
+	}
+	if strings.Contains(got, "not-pinned") {
+		t.Errorf("excluded not-pinned should not appear:\n%s", got)
+	}
+}
+
+func TestPresentResults_ExcludedNotPinnedKeepsWorkflowLoadErrors(t *testing.T) {
+	report := &checks.Report{
+		Workflows: []checks.WorkflowReport{
+			{
+				Path: ".github/workflows/pinned.yml",
+				Findings: []checks.Finding{{
+					Category:  checks.NotPinned,
+					Severity:  checks.SeverityError,
+					ActionRef: &parserlock.ActionRef{Owner: "actions", Repo: "checkout", Ref: "v4"},
+				}},
+			},
+			{
+				Path: ".github/workflows/broken.yml",
+				Findings: []checks.Finding{{
+					Category: checks.NotPinned,
+					Severity: checks.SeverityError,
+					Detail:   "failed to load workflow",
+				}},
+			},
+		},
+	}
+	var buf bytes.Buffer
+	PresentResults(ui.NewPlain(&buf), report, false, false, checks.NotPinned)
+
+	got := buf.String()
+	if !strings.Contains(got, "1 of 2 workflows failed: 1 not-pinned") {
+		t.Errorf("workflow load error should remain after remediation:\n%s", got)
+	}
+	if !strings.Contains(got, ".github/workflows/broken.yml") ||
+		!strings.Contains(got, "failed to load workflow") {
+		t.Errorf("workflow load error detail should be rendered:\n%s", got)
+	}
+	if strings.Contains(got, "not yet pinned") {
+		t.Errorf("workflow load error should not render as a fixable warning:\n%s", got)
+	}
+}
+
+func TestPresentResults_ExcludedNotPinnedDropsRemediableWorkflowErrors(t *testing.T) {
+	report := &checks.Report{
+		Workflows: []checks.WorkflowReport{
+			{
+				Path: ".github/workflows/repaired.yml",
+				Findings: []checks.Finding{{
+					Category:   checks.NotPinned,
+					Severity:   checks.SeverityError,
+					Remediable: true,
+					Detail:     "failed to read dependencies",
+				}},
+			},
+			{
+				Path: ".github/workflows/blocked.yml",
+				Findings: []checks.Finding{{
+					Category: checks.LocalAction,
+					Severity: checks.SeverityError,
+					Detail:   "local action ./my-action",
+				}},
+			},
+		},
+	}
+	var buf bytes.Buffer
+	PresentResults(ui.NewPlain(&buf), report, false, false, checks.NotPinned)
+
+	got := buf.String()
+	if !strings.Contains(got, "1 of 2 workflows failed: 1 local-action") {
+		t.Errorf("repaired dependency error should not remain after remediation:\n%s", got)
+	}
+	if strings.Contains(got, "not-pinned") || strings.Contains(got, "failed to read dependencies") {
+		t.Errorf("repaired dependency error should be excluded:\n%s", got)
 	}
 }
 

@@ -30,21 +30,30 @@ func PresentResults(out *ui.UI, report *checks.Report, valid bool, willRemediate
 		}
 	}
 
-	var validCount, failedCount int
+	var failedCount int
 	for _, wr := range report.Workflows {
-		if wr.IsValid() {
-			validCount++
-		} else {
-			failedCount++
+		for _, f := range wr.Findings {
+			if !f.IsValid() && !findingExcluded(f, exclude, willRemediate) {
+				failedCount++
+				break
+			}
 		}
 	}
-	checked := validCount + failedCount
+	checked := len(report.Workflows)
 
-	if !valid && checked > 0 {
-		renderErrorFindings(out, report, failedCount, checked, exclude)
+	if !valid && failedCount > 0 {
+		renderErrorFindings(out, report, failedCount, checked, exclude, willRemediate)
 	}
 
 	renderWarnings(out, report, willRemediate)
+}
+
+func findingExcluded(f checks.Finding, exclude map[checks.Category]bool, willRemediate bool) bool {
+	if f.Category == checks.NotPinned && !f.IsRemediableNotPinned() {
+		// Workflow-level NotPinned is a load failure, not a pin finding.
+		return false
+	}
+	return exclude[f.Category] || willRemediate && f.Category == checks.NotPinned
 }
 
 // PresentReadOnlyFailures renders error-level findings directly to the
@@ -178,7 +187,7 @@ func categoryLabel(c checks.Category) string {
 
 // renderErrorFindings groups error-level findings by dependency and prints
 // per-dep detail lines followed by a category-count summary.
-func renderErrorFindings(out *ui.UI, report *checks.Report, failedCount, checked int, exclude map[checks.Category]bool) {
+func renderErrorFindings(out *ui.UI, report *checks.Report, failedCount, checked int, exclude map[checks.Category]bool, willRemediate bool) {
 	type depGroup struct {
 		dep      string
 		findings []checks.Finding
@@ -192,6 +201,9 @@ func renderErrorFindings(out *ui.UI, report *checks.Report, failedCount, checked
 				continue
 			}
 			depKey := f.DepKey()
+			if depKey == "" {
+				depKey = wr.Path
+			}
 			if dg, ok := depMap[depKey]; ok {
 				dg.findings = append(dg.findings, f)
 			} else {
@@ -207,11 +219,11 @@ func renderErrorFindings(out *ui.UI, report *checks.Report, failedCount, checked
 
 		allSkip := true
 		for _, f := range dg.findings {
-			if exclude[f.Category] {
+			if findingExcluded(f, exclude, willRemediate) {
 				continue
 			}
 			catCounts[f.Category]++
-			if f.Category != checks.NotPinned {
+			if f.Category != checks.NotPinned || !f.IsRemediableNotPinned() {
 				allSkip = false
 			}
 		}
@@ -222,7 +234,8 @@ func renderErrorFindings(out *ui.UI, report *checks.Report, failedCount, checked
 		// Self-hosted-runner findings are no longer generated; render
 		// remaining non-excluded, non-not-pinned findings directly.
 		for _, f := range dg.findings {
-			if f.Category == checks.NotPinned || exclude[f.Category] {
+			if findingExcluded(f, exclude, willRemediate) ||
+				f.IsRemediableNotPinned() {
 				continue
 			}
 			renderFindingDetail(out, f, dep)

@@ -27,6 +27,10 @@ func reportHasUnfixableErrors(report *checks.Report, acceptMoved bool) bool {
 			switch f.Category {
 			case checks.LocalAction, checks.InvalidSelfRepositoryRef:
 				return true
+			case checks.NotPinned:
+				if !f.IsRemediableNotPinned() {
+					return true
+				}
 			case checks.UnreachablePin:
 				if !acceptMoved {
 					return true
@@ -48,7 +52,9 @@ func reportHasNonInvestigatedUnfixableErrors(report *checks.Report) bool {
 			if f.Severity != checks.SeverityError {
 				continue
 			}
-			if f.Category == checks.LocalAction || f.Category == checks.InvalidSelfRepositoryRef {
+			if f.Category == checks.LocalAction ||
+				f.Category == checks.InvalidSelfRepositoryRef ||
+				f.Category == checks.NotPinned && !f.IsRemediableNotPinned() {
 				return true
 			}
 		}
@@ -143,14 +149,12 @@ func renderPinSummary(ctx context.Context, console *ui.UI, record *pin.Record, r
 	// so they didn't reach stderr. Temporarily detach the log so the
 	// findings surface on the terminal.
 	//
-	// Only trigger for categories NOT already rendered by
-	// renderInvestigationAlerts (which handles unreachable-pin).
-	// Without this gate PresentResults would also emit a stale summary
-	// line counting pre-fix not-pinned findings.
+	// Exclude findings already handled elsewhere and pre-fix not-pinned
+	// findings that may have been committed for other workflows.
 	if reportHasNonInvestigatedUnfixableErrors(report) {
 		console.SetLog(nil)
 		format.PresentResults(console, report, false, false,
-			checks.UnreachablePin)
+			checks.UnreachablePin, checks.NotPinned)
 	}
 
 	if len(investigated) > 0 || len(unresolvedEntries) > 0 || hasUnfixable {
