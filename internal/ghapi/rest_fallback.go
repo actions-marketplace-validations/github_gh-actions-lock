@@ -11,7 +11,7 @@ import (
 	"sync"
 )
 
-// anonProbeCache caches per-owner results of anonymous access probes.
+// anonProbeCache caches per-owner results of unauthenticated access probes.
 // true = anonymous access confirmed working, false = not accessible.
 var anonProbeCache sync.Map // map[string]bool
 
@@ -45,6 +45,15 @@ func (c *Client) SSOFallbackEligible(ctx context.Context, owner string) bool {
 	eligible := resp.StatusCode == http.StatusOK
 	anonProbeCache.Store(key, eligible)
 	return eligible
+}
+
+func (c *Client) repoFallbackEligible(ctx context.Context, owner, repo string, err error) bool {
+	code, _ := StatusCode(err)
+	if !IsSAMLEnforcement(err) && code != http.StatusUnauthorized {
+		return false
+	}
+	_, metaErr := c.repoMetadata(ctx, owner, repo)
+	return metaErr == nil
 }
 
 // IsSAMLEnforcement reports whether err represents a SAML/SSO enforcement
@@ -162,23 +171,47 @@ func (c *Client) anonListTags(ctx context.Context, owner, repo string) ([]TagEnt
 // anonPeelTagObject determines whether sha is an annotated tag and, if so,
 // peels it to the underlying commit using unauthenticated REST.
 func (c *Client) anonPeelTagObject(ctx context.Context, owner, repo, sha string) (PeelTagObjectResult, error) {
-	// First, determine the object type via GET /repos/{owner}/{repo}/git/tags/{sha}.
-	// If it's not a tag (404), try the commit endpoint to confirm it's a commit.
-	tagPath := fmt.Sprintf("repos/%s/%s/git/tags/%s",
-		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(sha))
-	var tagResp struct {
-		Object struct {
-			Type string `json:"type"`
-			SHA  string `json:"sha"`
-		} `json:"object"`
-	}
-	if err := c.anonGet(ctx, tagPath, &tagResp); err == nil {
-		// It's an annotated tag — peel to the commit it points to.
-		result := PeelTagObjectResult{Typename: "Tag"}
-		if tagResp.Object.Type == "commit" {
-			result.CommitOID = tagResp.Object.SHA
+	const maxDepth = 16 // ponytail: cap pathological REST walks; raise only for a real tag chain.
+	current := sha
+	seen := make(map[string]struct{})
+	result := PeelTagObjectResult{}
+	for depth := 0; depth < maxDepth; depth++ {
+		if _, ok := seen[current]; ok {
+			return result, fmt.Errorf("annotated tag cycle at %s", current)
 		}
-		return result, nil
+		seen[current] = struct{}{}
+
+		tagPath := fmt.Sprintf("repos/%s/%s/git/tags/%s",
+			url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(current))
+		var tagResp struct {
+			Object struct {
+				Type string `json:"type"`
+				SHA  string `json:"sha"`
+			} `json:"object"`
+		}
+		if err := c.anonGet(ctx, tagPath, &tagResp); err != nil {
+			if depth > 0 {
+				return result, fmt.Errorf("peeling annotated tag %s: %w", current, err)
+			}
+			break
+		}
+
+		result.Typename = "Tag"
+		switch tagResp.Object.Type {
+		case "commit":
+			result.CommitOID = tagResp.Object.SHA
+			return result, nil
+		case "tag":
+			if tagResp.Object.SHA == "" {
+				return result, fmt.Errorf("annotated tag %s points to an empty tag SHA", current)
+			}
+			current = tagResp.Object.SHA
+		default:
+			return result, nil
+		}
+	}
+	if result.Typename == "Tag" {
+		return result, fmt.Errorf("annotated tag peel exceeded %d objects", maxDepth)
 	}
 
 	// Not a tag object — check if it's a commit directly.

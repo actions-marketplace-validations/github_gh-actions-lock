@@ -33,6 +33,9 @@ type PeelTagObjectResult struct {
 // (not an error) when the OID or repo is not accessible — callers decide
 // how to interpret the negative.
 func (c *Client) PeelTagObject(ctx context.Context, owner, repo, sha string) (PeelTagObjectResult, error) {
+	if c.restOnly {
+		return c.anonPeelTagObject(ctx, owner, repo, sha)
+	}
 	var resp struct {
 		Repository *struct {
 			Head *struct {
@@ -50,8 +53,7 @@ func (c *Client) PeelTagObject(ctx context.Context, owner, repo, sha string) (Pe
 		"expr":  sha + "^{commit}",
 	}
 	if err := c.graphql.DoWithContext(profile.WithGraphQLLabel(ctx, "peel"), tagObjectPeelQuery, vars, &resp); err != nil {
-		// SAML-blocked: fall back to anonymous REST peel.
-		if IsSAMLEnforcement(err) && c.SSOFallbackEligible(ctx, owner) {
+		if c.repoFallbackEligible(ctx, owner, repo, err) {
 			return c.anonPeelTagObject(ctx, owner, repo, sha)
 		}
 		return PeelTagObjectResult{}, err

@@ -27,6 +27,9 @@ func (c *Client) BatchBranchContains(ctx context.Context, owner, repo, sha strin
 	if len(branches) == 0 {
 		return "", false, nil
 	}
+	if c.restOnly {
+		return c.anonBatchBranchContains(ctx, owner, repo, sha, branches)
+	}
 
 	for start := 0; start < len(branches); start += batchReachabilitySize {
 		end := start + batchReachabilitySize
@@ -57,8 +60,7 @@ func (c *Client) batchBranchContainsChunk(ctx context.Context, owner, repo, sha 
 	if gqlErr != nil {
 		var httpErr *api.HTTPError
 		if errors.As(gqlErr, &httpErr) {
-			// SAML-blocked GraphQL → fall back to REST compare for eligible orgs.
-			if IsSAMLEnforcement(gqlErr) && c.SSOFallbackEligible(ctx, owner) {
+			if c.repoFallbackEligible(ctx, owner, repo, gqlErr) {
 				return c.anonBatchBranchContains(ctx, owner, repo, sha, branches)
 			}
 			return "", false, gqlErr
