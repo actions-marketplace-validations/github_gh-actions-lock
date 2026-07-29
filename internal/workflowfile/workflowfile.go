@@ -48,7 +48,32 @@ func Parse(path string, content []byte) (*File, error) {
 		return nil, fmt.Errorf("parsing workflow YAML: %w", err)
 	}
 
+	var invalid []string
+	walkUses(&f.root, func(value string, _ bool) {
+		if isUsesExpression(value) {
+			invalid = append(invalid, strings.TrimSpace(value))
+		}
+	})
+	if len(invalid) > 0 {
+		return nil, usesExpressionErr(invalid)
+	}
+
 	return f, nil
+}
+
+// isUsesExpression reports whether a `uses:` value contains an expression.
+// Malformed `$/…@ref` values are excluded so the more specific self
+// repository diagnostic still wins.
+func isUsesExpression(value string) bool {
+	value = strings.TrimSpace(value)
+	return strings.Contains(value, "${") && !SelfRepositoryRefHasVersion(value)
+}
+
+// usesExpressionErr reports an expression in `uses:`. GitHub Actions rejects
+// the workflow outright at both step and job level (no context is in scope
+// there), so parsing fails rather than skipping the line.
+func usesExpressionErr(values []string) error {
+	return fmt.Errorf("`uses:` can't contain an expression: %s", strings.Join(values, ", "))
 }
 
 // RefScan is the classified result of walking a workflow's `uses:` values.
@@ -86,10 +111,6 @@ func (f *File) ExtractActionRefs() RefScan {
 				seenSelf[value] = true
 				scan.SelfRepositoryRefErrs = append(scan.SelfRepositoryRefErrs, value)
 			}
-			return
-		}
-		if strings.Contains(value, "${") {
-			scan.Warnings = append(scan.Warnings, fmt.Sprintf("skipping unparseable uses: value %q (expressions are not supported)", value))
 			return
 		}
 		if IsSelfRepositoryAction(value) {
@@ -212,8 +233,6 @@ func ScanSelfRepositoryActions(workflowPath string, actionRefs []string) SelfRep
 					seenInvalid[use] = true
 					scan.SelfRepositoryRefErrs = append(scan.SelfRepositoryRefErrs, use)
 				}
-			case strings.Contains(use, "${"):
-				scan.Warnings = append(scan.Warnings, fmt.Sprintf("skipping unparseable uses: value %q in %s (expressions are not supported)", use, current.ref))
 			case IsSelfRepositoryAction(use):
 				if !seenSelf[use] {
 					seenSelf[use] = true
@@ -375,37 +394,81 @@ func ExtractLocalCompositeRefs(workflowPath string, localPaths []string) ([]pars
 	return refs, warnings
 }
 
+// walkUses visits `uses:` values at the only places GitHub Actions honors
+// them: `jobs.<id>.uses`, `jobs.<id>.steps[*].uses` in a workflow, and
+// `runs.steps[*].uses` in a composite action definition. A `uses` key
+// anywhere else (an env var, a `with:` input) is ordinary data, not a
+// reference.
 func walkUses(node *yaml.Node, fn func(value string, stepLevel bool)) {
-	walkUsesDepth(node, false, fn, 0)
-}
+	root := resolveAlias(documentRoot(node))
+	walkStepUses(mapValue(root, "runs"), fn)
 
-func walkUsesDepth(node *yaml.Node, inStep bool, fn func(value string, stepLevel bool), depth int) {
-	if node == nil || depth > maxYAMLWalkDepth {
+	jobs := mapValue(root, "jobs")
+	if jobs == nil || jobs.Kind != yaml.MappingNode {
 		return
 	}
-	switch node.Kind {
-	case yaml.DocumentNode, yaml.SequenceNode:
-		for _, child := range node.Content {
-			walkUsesDepth(child, inStep, fn, depth+1)
+	for i := 1; i < len(jobs.Content); i += 2 {
+		job := resolveAlias(jobs.Content[i])
+		if job == nil || job.Kind != yaml.MappingNode {
+			continue
 		}
-	case yaml.MappingNode:
-		for i := 0; i < len(node.Content)-1; i += 2 {
-			key := node.Content[i]
-			value := node.Content[i+1]
-			childInStep := inStep
-			if key.Kind == yaml.ScalarNode {
-				switch key.Value {
-				case "uses":
-					if value.Kind == yaml.ScalarNode {
-						fn(value.Value, inStep)
-					}
-				case "steps":
-					childInStep = true
-				}
-			}
-			walkUsesDepth(value, childInStep, fn, depth+1)
+		if use := scalarValue(mapValue(job, "uses")); use != "" {
+			fn(use, false)
+		}
+		walkStepUses(job, fn)
+	}
+}
+
+// walkStepUses visits the `uses:` of each step in owner's `steps:` sequence.
+func walkStepUses(owner *yaml.Node, fn func(value string, stepLevel bool)) {
+	steps := mapValue(owner, "steps")
+	if steps == nil || steps.Kind != yaml.SequenceNode {
+		return
+	}
+	for _, stepNode := range steps.Content {
+		step := resolveAlias(stepNode)
+		if step == nil || step.Kind != yaml.MappingNode {
+			continue
+		}
+		if use := scalarValue(mapValue(step, "uses")); use != "" {
+			fn(use, true)
 		}
 	}
+}
+
+func documentRoot(node *yaml.Node) *yaml.Node {
+	if node != nil && node.Kind == yaml.DocumentNode && len(node.Content) > 0 {
+		return node.Content[0]
+	}
+	return node
+}
+
+// resolveAlias dereferences YAML anchors so an aliased job or step is walked
+// like the node it points at.
+func resolveAlias(node *yaml.Node) *yaml.Node {
+	for i := 0; node != nil && node.Kind == yaml.AliasNode && i < maxYAMLWalkDepth; i++ {
+		node = node.Alias
+	}
+	return node
+}
+
+func mapValue(node *yaml.Node, key string) *yaml.Node {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i < len(node.Content)-1; i += 2 {
+		if node.Content[i].Kind == yaml.ScalarNode && node.Content[i].Value == key {
+			return resolveAlias(node.Content[i+1])
+		}
+	}
+	return nil
+}
+
+func scalarValue(node *yaml.Node) string {
+	if node == nil || node.Kind != yaml.ScalarNode {
+		return ""
+	}
+	return node.Value
 }
 
 // maxYAMLWalkDepth bounds recursion in walkYAMLNodes so a hostile or
@@ -517,10 +580,18 @@ func parseActionYAMLForUses(content []byte) ([]string, error) {
 	}
 
 	var uses []string
+	var invalid []string
 	for _, step := range action.Runs.Steps {
-		if step.Uses != "" {
+		switch {
+		case step.Uses == "":
+		case isUsesExpression(step.Uses):
+			invalid = append(invalid, strings.TrimSpace(step.Uses))
+		default:
 			uses = append(uses, step.Uses)
 		}
+	}
+	if len(invalid) > 0 {
+		return nil, usesExpressionErr(invalid)
 	}
 	return uses, nil
 }
