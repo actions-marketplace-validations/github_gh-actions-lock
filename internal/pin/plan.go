@@ -71,18 +71,14 @@ func Plan(ctx context.Context, report *checks.Report, opts PlanOptions) (*Record
 		items[i] = indexedWR{idx: i, wr: wr}
 	}
 
-	// Build set of NWOs globally recorded with a non-semver ref. Checked
-	// across all workflows (not per-WF) so two workflows referencing the
-	// same action settle on the same ref precision — avoiding duplicate
-	// dep entries in the lockfile.
+	// Build set of NWOs recorded with a non-semver ref as a *direct* pin.
+	// Checked across all workflows (not per-WF) so two workflows referencing
+	// the same action settle on the same ref precision — avoiding duplicate
+	// dep entries in the lockfile. Transitive pins are excluded: their ref is
+	// the composite author's choice, is never narrowed, and would otherwise
+	// permanently veto narrowing every direct use of the same NWO.
 	if opts.prevImpreciseNWO == nil && opts.Store != nil {
-		opts.prevImpreciseNWO = make(map[string]bool)
-		for _, d := range opts.Store.AllDeps() {
-			sv, ok := parserlock.ParseSemVer(d.Ref)
-			if ok && !sv.IsFull() {
-				opts.prevImpreciseNWO[strings.ToLower(d.NWO)] = true
-			}
-		}
+		opts.prevImpreciseNWO = impreciseDirectNWOs(opts.Store)
 	}
 
 	results := make([]planResult, len(report.Workflows))
@@ -141,7 +137,7 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	if !wr.NeedsAttention() && !repinMoved {
 		entries = verifiedEntries(inventory, wr.Path)
 		rw := narrowVerifiedEntries(ctx, entries, opts, rewriteRefKeys)
-		wplans = append(wplans, WorkflowPlan{Path: wr.Path, Rewrites: rw})
+		wplans = append(wplans, WorkflowPlan{Path: wr.Path, Rewrites: rw, SelfActionFiles: wr.SelfActionFiles})
 		return planResult{entries: entries, wplans: wplans}, nil
 	}
 
@@ -155,7 +151,7 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	// --accept-moved deliberately accepts these, so it is exempt.
 	if opts.Relock && !opts.AcceptMoved && wr.CountByCategory(checks.UnreachablePin) > 0 && repinMoved {
 		entries = verifiedEntries(wr.Inventory, wr.Path)
-		wplans = append(wplans, WorkflowPlan{Path: wr.Path})
+		wplans = append(wplans, WorkflowPlan{Path: wr.Path, SelfActionFiles: wr.SelfActionFiles})
 		return planResult{entries: entries, wplans: wplans}, nil
 	}
 
@@ -175,7 +171,7 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 
 	if len(unrecordedRefs) == 0 {
 		rw := narrowVerifiedEntries(ctx, entries, opts, rewriteRefKeys)
-		wplans = append(wplans, WorkflowPlan{Path: wr.Path, Rewrites: rw})
+		wplans = append(wplans, WorkflowPlan{Path: wr.Path, Rewrites: rw, SelfActionFiles: wr.SelfActionFiles})
 		return planResult{entries: entries, wplans: wplans}, nil
 	}
 
@@ -185,7 +181,7 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	if resolveErr != nil {
 		entries = append(entries, unresolvedEntries(wr, unrecordedRefs, deps, resolveErr)...)
 		if len(deps) == 0 {
-			wplans = append(wplans, WorkflowPlan{Path: wr.Path})
+			wplans = append(wplans, WorkflowPlan{Path: wr.Path, SelfActionFiles: wr.SelfActionFiles})
 			return planResult{entries: entries, wplans: wplans}, nil
 		}
 		// Fall through with partial deps to pin what we can.
@@ -271,13 +267,14 @@ func planWorkflow(ctx context.Context, wr checks.WorkflowReport, opts PlanOption
 	}
 	if len(rewrites) > 0 {
 		wplans = append(wplans, WorkflowPlan{
-			Path:     wr.Path,
-			Rewrites: rewrites,
+			Path:            wr.Path,
+			Rewrites:        rewrites,
+			SelfActionFiles: wr.SelfActionFiles,
 		})
 	} else if len(wplans) == 0 {
 		// No rewrites and no plan entry yet — still include the workflow
 		// so EnsureSentinel can be applied during commit.
-		wplans = append(wplans, WorkflowPlan{Path: wr.Path})
+		wplans = append(wplans, WorkflowPlan{Path: wr.Path, SelfActionFiles: wr.SelfActionFiles})
 	}
 
 	// Build entries for all pinned deps (skip any already emitted from inventory).
@@ -704,4 +701,22 @@ func splitNWO(nwo string) (string, string) {
 		return "", ""
 	}
 	return parts[0], parts[1]
+}
+
+// impreciseDirectNWOs returns lowercased NWOs recorded with a non-full-semver
+// ref as a direct pin of some workflow.
+func impreciseDirectNWOs(store *lockfile.State) map[string]bool {
+	out := make(map[string]bool)
+	for _, wfKey := range store.WorkflowKeys() {
+		deps, err := store.Get(wfKey)
+		if err != nil {
+			continue
+		}
+		for _, d := range deps {
+			if sv, ok := parserlock.ParseSemVer(d.Ref); ok && !sv.IsFull() {
+				out[strings.ToLower(d.NWO)] = true
+			}
+		}
+	}
+	return out
 }
