@@ -15,7 +15,6 @@ import (
 	"github.com/cli/go-gh/v2/pkg/repository"
 	parserlock "github.com/github/actions-lockfile/go/pkg/lockfile"
 	"github.com/github/gh-actions-lock/cmd/gh-actions-lock/format"
-	"github.com/github/gh-actions-lock/internal/config"
 	"github.com/github/gh-actions-lock/internal/pin"
 	"github.com/github/gh-actions-lock/internal/pinpool"
 	"github.com/github/gh-actions-lock/internal/pipeline"
@@ -244,11 +243,13 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 		console.StartProgress(fmt.Sprintf("Scanning %d %s", total, ui.Pluralize(total, "workflow", "workflows")))
 	}
 
-	// Build a Lister for pin narrowing,
-	// reusing the resolver's unified API client.
+	// Build a Lister for pin narrowing, reusing the resolver's API client; cooldown is resolved dependabot > config file > none.
 	var tagger *tag.Lister
+	var cooldownCfg tag.CooldownConfig
+	var cooldownWarnings []string
 	if gc := r.GHClient(); gc != nil {
-		tagger = tag.NewLister(gc, config.Load().Cooldown)
+		cooldownCfg, _, cooldownWarnings = ResolveCooldown(".")
+		tagger = tag.NewLister(gc, cooldownCfg)
 	}
 
 	runOpts := pipeline.RunOptions{
@@ -307,6 +308,10 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 			valid = report.IsValid()
 		}
 	}
+
+	// Surface Dependabot cooldown keys we don't honor before the diagnosis so
+	// they reach both read-only (--no-fix/--verify) and fix runs. Non-blocking.
+	appendCooldownConfigFindings(report, cooldownWarnings)
 
 	// Render the read-only diagnosis. --json selects the renderer; it does
 	// not decide whether fixes are applied. Terminal output is shown up front
@@ -412,6 +417,13 @@ func runCheck(cmd *cobra.Command, opts *checkOptions, newResolver resolverFunc) 
 	// this deliberately).
 	if !opts.noNarrow {
 		injectVersionRefFindings(report, record)
+	}
+
+	// Nudge on freshly pinned tags for actions with no effective cooldown.
+	// Non-blocking; per-entry so a global "configured" flag can't mask an
+	// action whose effective cooldown is 0.
+	if tagger != nil {
+		injectFreshTagFindings(ctx, report, record, tagger, cooldownCfg)
 	}
 
 	// Write the run log.

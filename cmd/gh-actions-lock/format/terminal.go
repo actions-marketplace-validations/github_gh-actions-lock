@@ -24,6 +24,11 @@ func PresentResults(out *ui.UI, report *checks.Report, valid bool, willRemediate
 		exclude[c] = true
 	}
 	for _, f := range report.RepoFindings {
+		// Fresh-tag nudges are appended after this render and shown by the
+		// fix-mode pin summary, so they surface on a clean pin too.
+		if f.Category == checks.FreshTag {
+			continue
+		}
 		out.TermWarn("%s", f.Detail)
 		if f.DocURL != "" {
 			out.TermDetail("see: %s", out.TermLink(f.DocURL, f.DocURL))
