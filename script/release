@@ -36,7 +36,7 @@ validate_tag() {
 }
 
 fetch_main() {
-  git fetch --quiet --tags origin refs/heads/main:refs/remotes/origin/main
+  git fetch --quiet --no-tags origin refs/heads/main:refs/remotes/origin/main
 }
 
 require_current_main() {
@@ -64,6 +64,12 @@ require_remote_annotated_tag() {
     die "remote tag ${tag} is missing, is not annotated, or does not point to ${commit}"
 }
 
+remote_tags() {
+  git ls-remote --tags --refs origin "refs/tags/$1" |
+    awk '{ sub("refs/tags/", "", $2); print $2 }' |
+    sort -Vr
+}
+
 cut_tag() {
   local bump="$1"
   local release_candidate="$2"
@@ -83,7 +89,7 @@ cut_tag() {
       latest="$t"
       break
     fi
-  done < <(git tag --list "${TAG_PREFIX}*" --sort=-v:refname)
+  done < <(remote_tags "${TAG_PREFIX}*")
 
   local base
   if [ -z "$latest" ]; then
@@ -112,7 +118,7 @@ cut_tag() {
       [[ "$candidate" =~ $TAG_RE ]] || continue
       n="${candidate##*.}"
       [ "$n" -gt "$rc" ] && rc="$n"
-    done < <(git tag --list "${tag}-rc.*")
+    done < <(remote_tags "${tag}-rc.*")
     tag="${tag}-rc.$((rc + 1))"
   fi
   validate_tag "$tag"

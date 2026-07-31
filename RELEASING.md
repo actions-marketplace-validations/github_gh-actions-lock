@@ -27,7 +27,7 @@ Use `patch` for compatible fixes, `minor` for compatible additions, and `major`
 for breaking changes.
 
 The script validates the repository, checks the current branch and `origin/main`,
-then pushes and verifies an annotated `vX.Y.Z` tag.
+then pushes and verifies an annotated `vX.Y.Z` or `vX.Y.Z-rc.N` tag.
 
 The tag workflow verifies the tag, then publishes the binaries, attestations,
 and GitHub release.

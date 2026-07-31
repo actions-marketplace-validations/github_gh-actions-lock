@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+tag="${1:-}"
+tag_re='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?$'
+
+if [[ ! "$tag" =~ $tag_re ]]; then
+  echo "error: invalid release tag '$tag'; expected vX.Y.Z or vX.Y.Z-rc.N" >&2
+  exit 1
+fi
+
+commit="$(git rev-list -n 1 "$tag")"
+remote_commit="$(git ls-remote --tags origin "refs/tags/${tag}^{}" | awk 'NR == 1 { print $1 }')"
+if [ "$(git cat-file -t "refs/tags/$tag")" != "tag" ] || [ "$remote_commit" != "$commit" ]; then
+  echo "error: release tag '$tag' is not an annotated remote tag" >&2
+  exit 1
+fi
+
+git fetch --quiet --no-tags origin refs/heads/main:refs/remotes/origin/main
+if ! git merge-base --is-ancestor "$commit" refs/remotes/origin/main; then
+  echo "error: release tag '$tag' does not point to a commit in origin/main" >&2
+  exit 1
+fi

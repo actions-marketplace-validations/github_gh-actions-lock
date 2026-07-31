@@ -7,13 +7,16 @@ EXT_DIR := $(XDG_DATA_HOME)/gh/extensions/$(EXT_NAME)
 
 RUBY := $(shell command -v /opt/homebrew/opt/ruby/bin/ruby 2>/dev/null || echo ruby)
 
-.PHONY: build test vet fmt fmt-check test-integration test-shell test-live test-smoke test-stub test-real install reinstall uninstall
+.PHONY: build test test-release vet fmt fmt-check test-integration test-shell test-live test-smoke test-stub test-real install reinstall uninstall
 
 build:
 	go build -o $(BIN) ./cmd/gh-actions-lock
 
-test:
+test: test-release
 	go test -race -count=1 ./...
+
+test-release:
+	script/release-test
 
 vet:
 	go vet ./...
