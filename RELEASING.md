@@ -14,7 +14,13 @@ Then cut it:
 script/release patch
 ```
 
-To cut a release candidate instead:
+To preview a release candidate:
+
+```sh
+RELEASE_DRY_RUN=1 script/release patch --rc
+```
+
+Then cut it:
 
 ```sh
 script/release patch --rc
@@ -22,6 +28,10 @@ script/release patch --rc
 
 The first candidate is `vX.Y.Z-rc.1`; repeating the same bump increments
 `rc.N`. Run the bump without `--rc` to publish the stable `vX.Y.Z`.
+
+Pushed release tags are immutable. If publishing fails, fix the publisher and
+run the release script again for the next RC; do not move or reuse the failed
+tag.
 
 Use `patch` for compatible fixes, `minor` for compatible additions, and `major`
 for breaking changes.
