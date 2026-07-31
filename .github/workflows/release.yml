@@ -1,21 +1,46 @@
 # This workflow is managed by gh actions-lock.
 
-name: release
+name: Release
+
 on:
   push:
     tags:
-      - "v*"
+      - v*
 
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  release:
+  publish:
+    name: Publish
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Verify tag
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?$ ]]; then
+            echo "::error::Invalid release tag '$GITHUB_REF_NAME'; expected vX.Y.Z or vX.Y.Z-rc.N."
+            exit 1
+          fi
+          commit="$(git rev-list -n 1 "$GITHUB_REF_NAME")"
+          remote_commit="$(git ls-remote --tags origin "refs/tags/${GITHUB_REF_NAME}^{}" | awk 'NR == 1 { print $1 }')"
+          if [ "$(git cat-file -t "refs/tags/$GITHUB_REF_NAME")" != "tag" ] || [ "$remote_commit" != "$commit" ]; then
+            echo "::error::Release tag '$GITHUB_REF_NAME' is not an annotated remote tag."
+            exit 1
+          fi
+
       - uses: cli/gh-extension-precompile@v2.1.0
         with:
           generate_attestations: true

@@ -1,0 +1,51 @@
+# Releasing `gh-actions-lock`
+
+## Cutting a release
+
+From a clean, current `main`, preview the next release:
+
+```sh
+RELEASE_DRY_RUN=1 script/release patch
+```
+
+Then cut it:
+
+```sh
+script/release patch
+```
+
+To cut a release candidate instead:
+
+```sh
+script/release patch --rc
+```
+
+The first candidate is `vX.Y.Z-rc.1`; repeating the same bump increments
+`rc.N`. Run the bump without `--rc` to publish the stable `vX.Y.Z`.
+
+Use `patch` for compatible fixes, `minor` for compatible additions, and `major`
+for breaking changes.
+
+The script validates the repository, checks the current branch and `origin/main`,
+then pushes and verifies an annotated `vX.Y.Z` tag.
+
+The tag workflow verifies the tag, then publishes the binaries, attestations,
+and GitHub release.
+
+## Dependabot compatibility
+
+Before releasing, decide whether
+[Dependabot's CLI integration](https://github.com/dependabot/dependabot-core/blob/main/github_actions/lib/dependabot/github_actions/lockfile/cli_engine.rb)
+must move with the release. Update `dependabot-core` when the release changes:
+
+- CLI flags used by Dependabot.
+- Findings JSON or exit codes.
+- Relocking behavior.
+- The lockfile schema.
+
+Dependabot
+[pins the CLI version and binary checksums](https://github.com/dependabot/dependabot-core/blob/main/github_actions/Dockerfile)
+and currently
+[accepts only lockfile schema `v0.0.2`](https://github.com/dependabot/dependabot-core/blob/main/github_actions/lib/dependabot/github_actions/constants.rb).
+Add schema support there before this CLI emits a new version. Unrelated releases
+do not need a Dependabot bump.

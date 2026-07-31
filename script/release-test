@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+tmp="$(mktemp -d)"
+trap 'rm -r "$tmp"' EXIT
+
+latest=""
+while IFS= read -r tag; do
+  if [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+    latest="$tag"
+    break
+  fi
+done < <(git -C "$root" tag --list 'v*' --sort=-v:refname)
+[[ -n "$latest" ]]
+IFS=. read -r major minor patch <<< "${latest#v}"
+next="v${major}.${minor}.$((patch + 1))"
+
+git init --quiet --bare "$tmp/origin.git"
+git clone --quiet "$tmp/origin.git" "$tmp/repo"
+cd "$tmp/repo"
+git config user.name test
+git config user.email test@example.com
+git switch --quiet -c main
+mkdir script
+cp "$root/script/release" script/release
+touch tracked
+git add .
+git commit --quiet -m initial
+git push --quiet -u origin main
+git tag -a "$latest" -m "$latest"
+
+mkdir "$tmp/bin"
+printf '#!/bin/sh\nexit 0\n' >"$tmp/bin/make"
+chmod +x "$tmp/bin/make"
+export PATH="$tmp/bin:$PATH"
+
+output="$(RELEASE_DRY_RUN=1 script/release patch --rc)"
+[[ "$output" == *"Cutting ${next}-rc.1 "* ]]
+
+git tag -a "${next}-rc.1" -m "${next}-rc.1"
+output="$(RELEASE_DRY_RUN=1 script/release patch --rc)"
+[[ "$output" == *"Cutting ${next}-rc.2 "* ]]
+
+output="$(RELEASE_DRY_RUN=1 script/release patch)"
+[[ "$output" == *"Cutting ${next} "* ]]
+
+echo "release tag selection: ${latest} -> ${next}-rc.1 -> ${next}-rc.2 -> ${next}"
