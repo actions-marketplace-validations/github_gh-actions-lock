@@ -27,7 +27,7 @@ jobs:
             exit 1
           fi
       - run: go vet ./...
-      - run: go test -race -count=1 ./...
+      - run: make test
 
   integration-stub:
     runs-on: ubuntu-latest

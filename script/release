@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+#
+# Cut a release tag for the Go sub-module.
+#
+# Usage:
+#   script/release <patch|minor|major>
+#   script/release <patch|minor|major> --rc
+#
+# The next version is computed from the latest vX.Y.Z tag and the chosen
+# bump. Maintainers run this locally to validate and push an annotated tag.
+# The tag workflow publishes it.
+#
+# Environment:
+#   RELEASE_DRY_RUN=1   Compute and print the next version, then stop before
+#                       tagging or pushing.
+#
+# Requires: git, go, make.
+
+set -euo pipefail
+
+TAG_PREFIX="v"
+STABLE_TAG_RE='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+TAG_RE='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?$'
+
+die() {
+  echo "error: $*" >&2
+  exit 1
+}
+
+# Run from the repository root regardless of the caller's cwd.
+cd "$(dirname "$0")/.."
+
+validate_tag() {
+  [[ "$1" =~ $TAG_RE ]] ||
+    die "invalid release tag '$1'; expected vX.Y.Z or vX.Y.Z-rc.N"
+}
+
+fetch_main() {
+  git fetch --quiet --no-tags origin refs/heads/main:refs/remotes/origin/main
+}
+
+require_current_main() {
+  local commit="$1"
+  local main
+  fetch_main
+  main="$(git rev-parse refs/remotes/origin/main)"
+  [ "$commit" = "$main" ] ||
+    die "release commit ${commit} is not current main ${main}"
+}
+
+require_clean() {
+  if [ -n "$(git status --porcelain)" ]; then
+    git --no-pager status --short >&2
+    die "working tree is not clean"
+  fi
+}
+
+require_remote_annotated_tag() {
+  local tag="$1"
+  local commit="$2"
+  local remote_commit
+  remote_commit="$(git ls-remote --tags origin "refs/tags/${tag}^{}" | awk 'NR == 1 { print $1 }')"
+  [ "$remote_commit" = "$commit" ] ||
+    die "remote tag ${tag} is missing, is not annotated, or does not point to ${commit}"
+}
+
+remote_tags() {
+  git ls-remote --tags --refs origin "refs/tags/$1" |
+    awk '{ sub("refs/tags/", "", $2); print $2 }' |
+    sort -Vr
+}
+
+cut_tag() {
+  local bump="$1"
+  local release_candidate="$2"
+
+  local branch
+  branch="$(git symbolic-ref --quiet --short HEAD || true)"
+  [ "$branch" = "main" ] || die "releases must be cut from main (got ${branch:-detached HEAD})"
+  require_clean
+  require_current_main "$(git rev-parse HEAD)"
+
+  make fmt-check vet test test-stub
+
+  local latest="" t
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    if [[ "$t" =~ $STABLE_TAG_RE ]]; then
+      latest="$t"
+      break
+    fi
+  done < <(remote_tags "${TAG_PREFIX}*")
+
+  local base
+  if [ -z "$latest" ]; then
+    base="0.0.0"
+    echo "No existing ${TAG_PREFIX}* release tag; basing bump on v0.0.0."
+  else
+    base="${latest#"$TAG_PREFIX"}"
+  fi
+
+  local major rest minor patch version tag
+  major="${base%%.*}"
+  rest="${base#*.}"
+  minor="${rest%%.*}"
+  patch="${rest#*.}"
+  case "$bump" in
+    major) major=$((major + 1)); minor=0; patch=0 ;;
+    minor) minor=$((minor + 1)); patch=0 ;;
+    patch) patch=$((patch + 1)) ;;
+  esac
+
+  version="v${major}.${minor}.${patch}"
+  tag="${TAG_PREFIX}${major}.${minor}.${patch}"
+  if [ "$release_candidate" = "1" ]; then
+    local candidate rc=0 n
+    while IFS= read -r candidate; do
+      [[ "$candidate" =~ $TAG_RE ]] || continue
+      n="${candidate##*.}"
+      [ "$n" -gt "$rc" ] && rc="$n"
+    done < <(remote_tags "${tag}-rc.*")
+    tag="${tag}-rc.$((rc + 1))"
+  fi
+  validate_tag "$tag"
+  git rev-parse -q --verify "refs/tags/${tag}" >/dev/null &&
+    die "tag ${tag} already exists"
+
+  echo "Cutting ${tag} (module version ${version}) at $(git rev-parse --short HEAD)"
+  if [ "${RELEASE_DRY_RUN:-}" = "1" ]; then
+    echo "RELEASE_DRY_RUN=1 set; stopping before tag and push."
+    return
+  fi
+
+  git tag -a "$tag" -m "$tag"
+  local commit
+  commit="$(git rev-parse "${tag}^{commit}")"
+  require_current_main "$commit"
+  git push origin "refs/tags/${tag}"
+  require_remote_annotated_tag "$tag" "$commit"
+  echo "Pushed ${tag}; the tag workflow will create the release."
+}
+
+case "${1:-}" in
+  patch | minor | major)
+    if [ "$#" -eq 1 ]; then
+      cut_tag "$1" 0
+    elif [ "$#" -eq 2 ] && [ "$2" = "--rc" ]; then
+      cut_tag "$1" 1
+    else
+      die "usage: script/release <patch|minor|major> [--rc]"
+    fi
+    ;;
+  *)
+    die "usage: script/release <patch|minor|major> [--rc]"
+    ;;
+esac

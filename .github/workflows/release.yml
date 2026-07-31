@@ -1,21 +1,36 @@
 # This workflow is managed by gh actions-lock.
 
-name: release
+name: Release
+
 on:
   push:
     tags:
-      - "v*"
+      - v*
 
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  release:
+  publish:
+    name: Publish
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Verify tag
+        run: script/verify-release-tag "$GITHUB_REF_NAME" v
+
       - uses: cli/gh-extension-precompile@v2.1.0
         with:
           generate_attestations: true
