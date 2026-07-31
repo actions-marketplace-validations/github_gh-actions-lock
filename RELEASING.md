@@ -29,9 +29,8 @@ script/release patch --rc
 The first candidate is `vX.Y.Z-rc.1`; repeating the same bump increments
 `rc.N`. Run the bump without `--rc` to publish the stable `vX.Y.Z`.
 
-Pushed release tags are immutable. If publishing fails, fix the publisher and
-run the release script again for the next RC; do not move or reuse the failed
-tag.
+A pushed release tag is immutable. If publishing fails, fix the publisher and
+run the release script again for the next RC; do not move or reuse the failed tag.
 
 Use `patch` for compatible fixes, `minor` for compatible additions, and `major`
 for breaking changes.
